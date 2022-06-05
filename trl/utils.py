@@ -1,5 +1,6 @@
+import re
 
-
+regex = re.compile(".*?\((.*?)\)")
 
 housegan_labels = {"livingroom": 1, "kitchen": 2, "bedroom": 3, "bathroom": 4, "missing": 5, "closet": 6, 
                          "balcony": 7, "corridor": 8, "dining_room": 9, "laundry_room": 10}
@@ -53,16 +54,7 @@ def get_value(dictionary, val):
     for key, value in dictionary.items():
         if val == key:
             return value
-
-def angle_between(a,b):
-    dot = a[0]*b[0] + a[1]*b[1]      # dot product between [x1, y1] and [x2, y2]
-    det = a[0]*b[1] - a[1]*b[0]      # determinant
-    angle = atan2(det, dot)  # atan2(y, x) or atan2(sin, cos)
-    
-    return np.rad2deg(angle)
   
-
-
 def house_bbox(polygons):
     bounds = [polygon.bounds for polygon in polygons]
     
@@ -72,25 +64,6 @@ def house_bbox(polygons):
     ymax = np.array(bounds)[:, 3].max()
     
     return xmin, xmax, ymin, ymax
-
-def find_intersections(seed_polygon, target_polygons):
-    """
-        A function that finds intersections between a seed polygon and a list of candidate polygons.
-
-    Args:
-        seed_polygon (shapely polygon): A shapely polygon.
-        target_polygons (list): A list of shapely polygons.
-
-    Returns:
-        array: The intersection matrix between the seed polygon and all individual target polygons.
-    """
-    intersect_booleans = []
-    for _, poly in enumerate(target_polygons):
-        try:
-            intersect_booleans.append(seed_polygon.intersects(poly))
-        except:
-            intersect_booleans.append(True)
-    return intersect_booleans
 
 def get_location_distances(prompt, desc):
     req_location = prompt.split('is located in the ')[1].split(' side')[0]
@@ -106,3 +79,88 @@ def get_location_distances(prompt, desc):
     else:
         location_distance=2
     return location_distance
+  
+def get_layout_details(lm_generation, prompt):
+    geom = []
+    new_spaces = []
+    new_space_ids = []
+    fail=0
+    gfa = dict.fromkeys([prompt])
+    temp = dict()
+    layout = lm_generation.lower().lstrip().replace('<|endoftext|>', '').rstrip().split(', ')
+    spaces = [txt.split(':')[0].replace('living_room', 'livingroom') for txt in layout]
+    space_numbers = Counter(spaces)
+    space_ids = [get_value(housegan_labels, space) for space in spaces if(type(get_value(housegan_labels, space)) == int)]
+    coordinates = [txt.split(':')[1].lstrip() for txt in layout]
+    coordinates = [re.findall(regex, coord) for coord in coordinates]
+    coordinates = [x for x in coordinates if x != []]
+
+    polygons = []
+    for coord in coordinates:
+        polygons.append([point.split(',') for point in coord])
+    for poly, space, space_id in zip(polygons, spaces, space_ids):
+        poly = [x for x in poly if x != ['']]
+        poly = [x for x in poly if '' not in x]
+        try:
+            geom.append(Polygon(np.array(poly, dtype=int)))
+            new_spaces.append(space)
+            new_space_ids.append(space_id)
+        except:
+            fail=1 
+    if(fail==1):
+        failed+=1
+    else:
+        cleaned = [(g, space, id_) for g, space, id_ in zip(geom, new_spaces, new_space_ids) if g.area>0]
+        geom = [clean[0] for clean in cleaned]
+        spaces = [clean[1] for clean in cleaned]
+        space_ids = [clean[2] for clean in cleaned]
+
+    vectors = []
+    xmin, xmax, ymin, ymax = house_bbox(geom)
+    center_point = xmin+((xmax - xmin)/2), ymin+((ymax-ymin)/2)
+
+    room_coords = np.concatenate([poly.centroid.xy for poly in geom])
+    room_y = room_coords[0::2]
+    room_x = room_coords[1::2]
+    room_centroids = np.hstack([room_x, room_y])
+
+    for centroid in room_centroids:
+        vectors.append([center_point[0]-centroid[0], center_point[1]-centroid[1]])
+        
+    for geo, space in zip(geom, spaces):
+        add_and_increment(temp, space, geo.area)
+        add_and_increment(temp, space+'_avg', geo.area / space_numbers[space])
+        
+    for key in gfa.keys():
+        gfa[key] = temp
+        
+    return spaces, geom, vectors, gfa
+
+def get_layout_accuracy(spaces, geom, vectors, prompt):
+    n_descriptions, a_descriptions, l_descriptions = dict(), dict(), dict()
+    annotations = []
+    accuracy = []
+    num_desc = num_rooms_annotation(spaces)
+    for desc in list(flatten(num_desc)):
+        add_and_increment(n_descriptions, desc, increment=1)
+    annotations.extend(list(set(flatten(num_desc))))
+    adj_desc = adjacency_annotations(spaces, geom)
+    for desc in list(flatten(adj_desc)):
+        add_and_increment(a_descriptions, desc, increment=1)
+    annotations.extend(list(set(flatten(adj_desc))))
+    loc_desc = location_annotations(spaces, vectors)
+    for desc in list(flatten(loc_desc)):
+        add_and_increment(l_descriptions, desc, increment=1)
+    annotations.extend(list(set(flatten(loc_desc))))
+
+    annotations = [re.sub('_', ' ', d) for d in annotations]
+    """
+    if "adjacent to" in prompt:
+        prompt_a = 'a ' + ' '.join(prompt.split(' ')[1:]).lower()
+        prompt_b = 'the ' + ' '.join(prompt.split(' ')[1:]).lower()
+        accuracy.append((prompt_a in annotations) | (prompt_b in annotations))
+    else:
+        accuracy.append(prompt in annotations)
+    """
+    accuracy.append(prompt in annotations)
+    return accuracy, annotations, n_descriptions, a_descriptions, l_descriptions
