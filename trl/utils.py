@@ -1,4 +1,9 @@
 import re
+from word2number import w2n
+
+from .annotations import (num_rooms_annotation,
+                          adjacency_annotations,
+                          location_annotations)
 
 regex = re.compile(".*?\((.*?)\)")
 
@@ -164,3 +169,26 @@ def get_layout_accuracy(spaces, geom, vectors, prompt):
     """
     accuracy.append(prompt in annotations)
     return accuracy, annotations, n_descriptions, a_descriptions, l_descriptions
+  
+def get_room_distances(prompt, spaces):
+    nbed, nbath, nrooms, bedd, bathd, avg_bb_distance, room_distance = None, None, None, None, None, None, None
+    lbed = prompt.find('bedroom')
+    lbath = prompt.find('bathroom')
+    lrooms = prompt.find(' rooms')
+    if(lbed>0):
+        nbed = w2n.word_to_num(prompt[:lbed].rstrip().split(' ')[-1])
+    if(lbath>0):
+        nbath = w2n.word_to_num(prompt[:lbath].rstrip().split(' ')[-1])
+    if(lrooms>0):
+        nrooms = w2n.word_to_num(prompt[:lrooms].rstrip().split(' ')[-1])
+        
+    if(nbed and nbath):
+        gen_bed = np.where(np.array(spaces) == 'bedroom')[0].shape[0]
+        gen_bath = np.where(np.array(spaces) == 'bathroom')[0].shape[0]
+        bedd = nbed - gen_bed
+        bathd = nbath - gen_bath
+        avg_bb_distance = (abs(bedd) + abs(bathd)) / 2
+    if(nrooms):
+        room_distance = len(spaces) - nrooms
+
+    return bedd, bathd, avg_bb_distance, room_distance
